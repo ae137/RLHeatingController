@@ -1,0 +1,33 @@
+State space:
+- Two-dimensional: inside temperature and outside temperature
+
+Action space:
+- One-dimensional and discrete: Heating is either switched on or off
+
+
+System dynamics:
+- Outside temperature is driven by external process, for example simple sinusoidal oscillations plus noise term
+- Inside temperature is governed by heat conduction equation (as dynamical system):
+    # If outside temperature is lower than inside temperature, the building loses energy and the inside temperature
+        drops
+    # Equation:
+        Ti_(t+1) = Ti_t + h * action + (To_t - Ti_t) * l
+        Ti_t:   Inside temperature at time t
+        To_t:   Outside temperature at time t
+        h:      Heating power
+        action: Describes whether heating is switched on or off
+        l:      Loss coefficient for heat from inside
+        dt:     Time step, assumed to be 15 min
+    # Estimation of coefficients:
+        h:      Heating system is designed such that the inside temperature increases by 1 K in 15 min (i.e. we chose
+                    the coefficient h = 1 in a simple approximation)
+        l:      Insulation is such that the house cools down by 1 K in 1h if the temperature difference is 10 K
+                    (i.e. in a first simple approximation we chose l = 1 / (4 * 10) = 0.025)
+        To_t:   For the beginning, we assume a sinusoidal-like temperature dependence:
+                To_t = Tmin + (Tmax - Tmin) * (sin(pi * t / 96))^2 where t is the number of time steps (4 * 24 = 96 per day)
+                Summer day:
+                    Tmin = 10
+                    Tmax = 25
+                Winter day:
+                    Tmin = -10
+                    Tmax = 5

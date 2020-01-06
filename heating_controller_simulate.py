@@ -27,17 +27,11 @@ import ray
 import os
 
 import temperature_simulator as temp_sim
+import heating_controller_config
+import baseline_policy
 
 # Register HeatingEnv with ray reinforcement learning library
 ray.tune.registry.register_env('HeatingEnv-v0', HeatingEnvCreator)
-
-To_min = 5      # Mean of minimum outside temperature in °C
-To_max = 15     # Mean of maximum outside temperature in °C
-T_target = 21
-
-Tin_init_props = temp_sim.TempInsideInitProps(mean=T_target, spread=5)
-Tout_init_props = temp_sim.TempOutsideInitProps(mean_min=To_min, spread_min=3,
-                                                mean_max=To_max, spread_max=3)
 
 # This configuration should be the same as in heating_controller_train.py
 config = {
@@ -47,29 +41,28 @@ config = {
     "lr": 0.0005,
     "train_batch_size": 4096,
     "num_workers": 6,
-    "env_config": {
-        "h": 0.15,
-        "l": 0.025,
-        "temp_diff_penalty": 1,
-        'horizon': 400,
-        'temp_in_init': Tin_init_props,
-        "out_temp_sim": temp_sim.EnvironmentSimulator(Tout_init_props),
-        "target_temp": temp_sim.TargetTemperature(T_target)
-        }
+    "env_config": heating_controller_config.env_config_dict
     }
 
 # Construct path to checkpoint trained with heating_controller_train.py
-base_path = os.environ['HOME'] + '/ray_results/demo'
-trial_path = 'PPO_HeatingEnv_0_lr=0.0005_2019-08-18_10-32-28ewsqlec4'
-checkpoint_num = 81
+base_path = os.environ['HOME'] + '/ray_results'
+trial_path = 'demo/PPO_HeatingEnv_400b3122_2020-01-06_20-10-49xslx9qsd'
+checkpoint_num = 99
 
 ckpt_path = base_path + '/' + trial_path + '/checkpoint_' + str(checkpoint_num) + \
     '/checkpoint-' + str(checkpoint_num)
 
 ray.init()
 
+
+env = HeatingEnv(config['env_config'])
+
+# agent = baseline_policy.HeatWhenTooColdPolicy(env.observation_space, env.action_space, config)
+# agent = baseline_policy.RandomPolicy(env.observation_space, env.action_space, config)
+
 agent = ppo.PPOAgent(config=config, env="HeatingEnv-v0")
 agent.restore(ckpt_path)
+
 
 steps = []
 Ti = []
@@ -79,8 +72,6 @@ rewards = []
 
 done = False
 idx = 0
-
-env = HeatingEnv(config['env_config'])
 
 obs = env.get_obs()
 
@@ -93,8 +84,8 @@ while (not done):
 
     obs, rew, done, _ = env.step(action)
 
-    Ti.append(obs[0])
-    To.append(obs[1])
+    To.append(obs[2])
+    Ti.append(obs[3])
     rewards.append(rew)
     idx += 1
 
@@ -105,3 +96,6 @@ plt.plot(steps, actions, label='Actions')
 plt.plot(steps, rewards, label='Rewards')
 plt.legend()
 plt.show()
+
+print("Average reward achieved over last", len(rewards) - 100, "steps:\t",
+      sum(rewards[100:]) / (len(rewards) - 100))

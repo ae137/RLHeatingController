@@ -24,12 +24,13 @@ from __future__ import print_function
 import numpy as np
 import gym
 import math
-from gym.spaces import Discrete, Box
+import gym.spaces
 
 import ray
-from ray.tune import run_experiments, grid_search
+import ray.tune
 
 import temperature_simulator as temp_sim
+import heating_controller_config
 
 
 def reward_comfort(target_temp, real_temp) -> float:
@@ -50,11 +51,27 @@ def reward_comfort(target_temp, real_temp) -> float:
     return -abs(target_temp - real_temp)**2
 
 
+def reward_action_change(last_action, current_action) -> float:
+    """ Compute reward for changing the action between steps
+
+    Parameters
+    ----------
+    last_action:    float
+        Last action
+    current_action: float
+        Current action
+
+    Returns
+    -------
+    float
+        Reward for changing actions between steps
+    """
+    return -abs(last_action - current_action)
+
+
 class HeatingEnv(gym.Env):
     """ OpenAI gym environment for training a heating controller with reinforcement learning """
     episode_counter = 0
-    action_space = Discrete(2)
-    observation_space = Box(-30, 50, shape=(2,), dtype=np.float32)
 
     def __init__(self, env_config):
         """ Initialize OpenAI gym environment for heating controller
@@ -68,6 +85,9 @@ class HeatingEnv(gym.Env):
         self.ener_loss = env_config["l"]                            # Energy loss coefficient
         self.horizon = env_config['horizon']                        # Episode length
         self.temp_diff_penalty = env_config["temp_diff_penalty"]    # Weight of comfort reward
+        self.action_penalty = env_config["action_penalty"]          # Weight of action changes
+        self.len_hist = env_config["len_hist"]                      # History length for inside temp
+        self.last_action = 0                                        # Variable storing last action
 
         self.out_temp_sim = env_config["out_temp_sim"]              # Outside temperature simulator
         self.target_temp = env_config["target_temp"]                # Target temperature simulator
@@ -76,6 +96,20 @@ class HeatingEnv(gym.Env):
 
         self.temp_in_init_props = env_config['temp_in_init']        # Parameter for inside temp init
         self.state = self.get_init_state()
+
+        # Action space:
+        #   0: Heating off
+        #   1: Heating on
+        self.action_space = gym.spaces.Discrete(2)
+        # Observation space at t = 0:
+        # Ttgt[4], Ttgt[0], Tout[0], Tin[0], Tin[-1], Tin[-2], Tin[-3]
+        # Ttgt[4]: Target temperature four time steps in the future
+        # Ttgt[0]: Current target temperature
+        # Tout[0]: Outside temperature
+        # Tin[-n]: Inside temperature n time steps ago
+        self.observation_space = gym.spaces.Box(-30, 50,
+                                                shape=(3 + self.len_hist,),
+                                                dtype=np.float32)
 
     def reset(self) -> np.array:
         """ Reset gym environment
@@ -90,6 +124,7 @@ class HeatingEnv(gym.Env):
 
         self.out_temp_sim.reset()
         self.state = self.get_init_state()
+        self.last_action = 0
 
         return self.get_obs()
 
@@ -112,7 +147,7 @@ class HeatingEnv(gym.Env):
             Unused
         """
         self.time += 1
-        Ti_old, To_old = self.get_obs()
+        _, _, To_old, Ti_old, *_ = self.get_obs()
 
         Ti_new = Ti_old + math.sqrt(max(Ti_old - To_old, 1)) * self.heater_strength * action \
             + (To_old - Ti_old) * self.ener_loss
@@ -121,8 +156,10 @@ class HeatingEnv(gym.Env):
         self.update_state(Ti_new, To_new)
 
         rew = self.temp_diff_penalty * reward_comfort(self.target_temp.getTargetTemp(self.time),
-                                                      Ti_new)
+                                                      Ti_new) \
+            + self.action_penalty * reward_action_change(self.last_action, action)
 
+        self.last_action = action
         return self.get_obs(), rew, (self.time > self.horizon), {}
 
     def get_init_state(self) -> np.array:
@@ -133,8 +170,11 @@ class HeatingEnv(gym.Env):
         np.array
             New state of system
         """
-        return np.array([temp_sim.temp_inside_init(self.temp_in_init_props),
-                         self.out_temp_sim.getOutTemp(self.time)])
+        T_tgt_4 = self.target_temp.getTargetTemp(self.time + 4)
+        T_tgt = self.target_temp.getTargetTemp(self.time)
+        To_init = self.out_temp_sim.getOutTemp(self.time)
+        Ti_init = temp_sim.temp_inside_init(self.temp_in_init_props)
+        return np.array([T_tgt_4, T_tgt, To_init, *([Ti_init]*self.len_hist)])
 
     def update_state(self, Ti_new, To_new):
         """ Update system state with given temperatures
@@ -146,7 +186,14 @@ class HeatingEnv(gym.Env):
         To_new: float
             New outside temperature of system
         """
-        self.state = np.array([Ti_new, To_new])
+        old_state = self.state
+        T_tgt = self.target_temp.getTargetTemp(self.time)
+        T_tgt_4 = self.target_temp.getTargetTemp(self.time + 4)
+
+        self.state = np.zeros_like(old_state)
+        self.state[0:4] = np.array([T_tgt_4, T_tgt, To_new, Ti_new])
+        if self.len_hist > 1:
+            self.state[4:] = old_state[3:-1]
 
     def get_obs(self):
         return self.state
@@ -169,17 +216,10 @@ def HeatingEnvCreator(env_config):
 
 
 if __name__ == "__main__":
-    To_min = 5      # Mean of minimum outside temperature in °C
-    To_max = 15     # Mean of maximum outside temperature in °C
-    T_target = 21   # Target temperature of system in °C
-
-    Tin_init_props = temp_sim.TempInsideInitProps(mean=T_target, spread=5)
-    Tout_init_props = temp_sim.TempOutsideInitProps(mean_min=To_min, spread_min=3,
-                                                    mean_max=To_max, spread_max=3)
 
     ray.init()
 
-    run_experiments({
+    ray.tune.run_experiments({
         "demo": {
             "run": "PPO",       # This algorithm yielded the best performance so far
             # "run": "DQN",
@@ -195,18 +235,14 @@ if __name__ == "__main__":
                     # "use_lstm": True,
                     "fcnet_hiddens": [32, 32],
                     },
-                "lr": grid_search([0.0005]),
-                "train_batch_size": 4096,
+                "lr": ray.tune.grid_search([0.0005]),
+                "train_batch_size": 4096,   # 8192
+                "gamma": 0.97,
+                "entropy_coeff": 0.01,
+                # "vf_clip_param": 10.0,
+                # "grad_clip": 10,
                 "num_workers": 6,       # 1,  # parallelism
-                "env_config": {
-                    "h": 0.15,
-                    "l": 0.025,
-                    "temp_diff_penalty": 1,
-                    'horizon': 400,
-                    'temp_in_init': Tin_init_props,
-                    "out_temp_sim": temp_sim.EnvironmentSimulator(Tout_init_props),
-                    "target_temp": temp_sim.TargetTemperature(T_target)
-                    },
+                "env_config": heating_controller_config.env_config_dict,
             },
         },
     })
