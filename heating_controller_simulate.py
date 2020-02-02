@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import gym
 import ray.rllib.agents.ppo as ppo
+import ray.rllib.agents.dqn as dqn
 import ray
 import os
 
@@ -36,7 +37,7 @@ ray.tune.registry.register_env('HeatingEnv-v0', HeatingEnvCreator)
 # This configuration should be the same as in heating_controller_train.py
 config = {
     'model': {
-        "fcnet_hiddens": [32, 32],
+        "fcnet_hiddens": [8, 8],
         },
     "lr": 0.0005,
     "train_batch_size": 4096,
@@ -46,8 +47,9 @@ config = {
 
 # Construct path to checkpoint trained with heating_controller_train.py
 base_path = os.environ['HOME'] + '/ray_results'
-trial_path = 'demo/PPO_HeatingEnv_400b3122_2020-01-06_20-10-49xslx9qsd'
-checkpoint_num = 99
+# trial_path = 'demo_PPO_2/PPO_HeatingEnv_4935f5bd_2020-02-01_00-21-409_2ik84_' # [32, 32]
+trial_path = 'demo_PPO_2/PPO_HeatingEnv_4935f5b4_2020-01-31_23-13-38skhvlqqr'   # [8, 8]
+checkpoint_num = 200
 
 ckpt_path = base_path + '/' + trial_path + '/checkpoint_' + str(checkpoint_num) + \
     '/checkpoint-' + str(checkpoint_num)
@@ -60,6 +62,7 @@ env = HeatingEnv(config['env_config'])
 # agent = baseline_policy.HeatWhenTooColdPolicy(env.observation_space, env.action_space, config)
 # agent = baseline_policy.RandomPolicy(env.observation_space, env.action_space, config)
 
+# agent = ppo.PPOAgent(config=config, env="HeatingEnv-v0")
 agent = ppo.PPOAgent(config=config, env="HeatingEnv-v0")
 agent.restore(ckpt_path)
 
@@ -67,6 +70,7 @@ agent.restore(ckpt_path)
 steps = []
 Ti = []
 To = []
+Ttgt = []
 actions = []
 rewards = []
 
@@ -84,6 +88,7 @@ while (not done):
 
     obs, rew, done, _ = env.step(action)
 
+    Ttgt.append(obs[1])
     To.append(obs[2])
     Ti.append(obs[3])
     rewards.append(rew)
@@ -92,6 +97,7 @@ while (not done):
 
 plt.plot(steps, Ti, label='Ti')
 plt.plot(steps, To, label='To')
+plt.plot(steps, Ttgt, label='Ttgt')
 plt.plot(steps, actions, label='Actions')
 plt.plot(steps, rewards, label='Rewards')
 plt.legend()

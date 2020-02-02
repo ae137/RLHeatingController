@@ -24,45 +24,34 @@ from collections import namedtuple
 # random.seed(0)
 
 # Named tuple for storing data required for initializing the simulation of the evolution of
-# the inside temperature
-TempInsideInitProps = namedtuple('TempInsideInitProps', ['mean', 'spread'])
-
-# Named tuple for storing data required for initializing the simulation of the evolution of
 # the outside temperature
-TempOutsideInitProps = namedtuple('TempOutsideInitProps', ['mean_min', 'spread_min',
-                                                           'mean_max', 'spread_max'])
+TempInitProps = namedtuple('TempOutsideInitProps', ['mean_min', 'spread_min',
+                                                    'mean_max', 'spread_max'])
 
 
-def temp_inside_init(Tin_init) -> float:
-    """ Get initial value for inside temperature
-
-    Parameters
-    ----------
-    Tin_init: TempInsideInitProps
-        Named tuple with data for initializing inside temperature
-
-    Returns
-    -------
-    float
-        Initial value for inside temperature
-    """
-    return Tin_init.mean + random.randint(-Tin_init.spread, Tin_init.spread)
-
-
-class EnvironmentSimulator(object):
-    """ Simple class for simulating the evolution of the outside temperature over time """
+class TemperatureSimulatorBase(object):
+    """ Simple base class for temperature simulators """
 
     def __init__(self, init_props):
-        """ Initialize simulator for outside temperature
+        """ Initialize simulator
 
         Parameters
         ----------
-        init_props: TempOutsideInitProps
-            Named tuple with data for initializing outside temperature
+        init_props: TempInitProps
+            Named tuple with data for initializing temperature simulator
         """
         self.init_props = init_props
         self.reset()
 
+    def reset(self):
+        """ Reinitialize temperature simulator with new min and max values """
+        self.T_min = self.init_props.mean_min + random.uniform(-self.init_props.spread_min,
+                                                               self.init_props.spread_min)
+        self.T_max = self.init_props.mean_max + random.uniform(-self.init_props.spread_max,
+                                                               self.init_props.spread_max)
+
+
+class EnvironmentTemperatureSimulator(TemperatureSimulatorBase):
     def getOutTemp(self, time_step) -> float:
         """ Return current outside temperature
 
@@ -76,30 +65,12 @@ class EnvironmentSimulator(object):
         float
             Outside temperature at time time_step
         """
-        return self.To_min + (self.To_max - self.To_min) \
+        return self.T_min + (self.T_max - self.T_min) \
             * (math.sin(math.pi * time_step / 96))**2
 
-    def reset(self):
-        """ Reinitialize simulator of outside temperature with new min and max values """
-        self.To_min = self.init_props.mean_min + random.randint(-self.init_props.spread_min,
-                                                                self.init_props.spread_min)
-        self.To_max = self.init_props.mean_max + random.randint(-self.init_props.spread_max,
-                                                                self.init_props.spread_max)
 
-
-class TargetTemperature(object):
+class TargetTemperatureSimulator(TemperatureSimulatorBase):
     """ Simple class for simulating the evolution of the target inside temperature over time """
-
-    def __init__(self, T_target):
-        """ Initialize time simulator for time dependence of target inside temperature
-
-        Parameters
-        ----------
-        T_target: float
-            Target inside temperature
-        """
-        self.T_target = T_target    # Can later be replaced by more complicated target
-
     def getTargetTemp(self, time_step) -> float:
         """ Return current target inside temperature
 
@@ -113,7 +84,13 @@ class TargetTemperature(object):
         float
             Target inside temperature at time time_step
         """
-        return self.T_target
+        # Time dependence of temperature without variation:
+        # return self.T_max
+        # Time dependence of target temperature corresponding to a weekend day:
+        return self.T_max if (time_step % 96 > 27 and time_step % 96 < 87) else self.T_min
+        # Time dependence of target temperature corresponding to a week day:
+        # return self.T_max if ((time_step % 96 > 23 and time_step % 96 < 33) or
+        #                       (time_step % 96 > 68 and time_step % 96 < 88)) else self.T_min
 
 
 def main_func():
@@ -122,22 +99,29 @@ def main_func():
 
     To_min = 5      # Mean of minimum outside temperature in °C
     To_max = 15     # Mean of maximum outside temperature in °C
+    Tout_init_props = TempInitProps(mean_min=To_min, spread_min=3, mean_max=To_max, spread_max=3)
+    EnvTempSim = EnvironmentTemperatureSimulator(Tout_init_props)
 
-    Tout_init_props = TempOutsideInitProps(mean_min=To_min, spread_min=3,
-                                           mean_max=To_max, spread_max=3)
-    EnvTempSim = EnvironmentSimulator(Tout_init_props)
+    Ti_min = 16     # Mean of minimum inside target temperature in °C
+    Ti_max = 21     # Mean of maximum inside target temperature in °C
+    Tin_init_props = TempInitProps(mean_min=Ti_min, spread_min=2, mean_max=Ti_max, spread_max=2)
+    TargetTempSim = TargetTemperatureSimulator(Tin_init_props)
 
     time_hours = []
     temp_data = []
+    target_temp_data = []
     for time_step in range(96 * 4):
         if (time_step % 96 == 0):
             EnvTempSim.reset()
+            TargetTempSim.reset()
         time_hours.append(time_step / 4)
         temp_data.append(EnvTempSim.getOutTemp(time_step))
+        target_temp_data.append(TargetTempSim.getTargetTemp(time_step))
 
     plt.xlabel('Time (h)')
-    plt.ylabel('Outside temperature (°C)')
+    plt.ylabel('Outside temperature (°C) / Target temperature (°C)')
     plt.plot(time_hours, temp_data)
+    plt.plot(time_hours, target_temp_data)
     plt.show()
 
 

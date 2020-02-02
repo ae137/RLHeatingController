@@ -22,6 +22,7 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+import random
 import gym
 import math
 import gym.spaces
@@ -30,6 +31,7 @@ import ray
 import ray.tune
 
 import temperature_simulator as temp_sim
+import heater_state_machine as heater_state
 import heating_controller_config
 
 
@@ -90,11 +92,12 @@ class HeatingEnv(gym.Env):
         self.last_action = 0                                        # Variable storing last action
 
         self.out_temp_sim = env_config["out_temp_sim"]              # Outside temperature simulator
-        self.target_temp = env_config["target_temp"]                # Target temperature simulator
+        self.tgt_temp_sim = env_config["tgt_temp_sim"]              # Target temperature simulator
+        self.heater = env_config["heater"]                          # Heating power simulator
         self.time = 0
         self.out_temp_sim.reset()
+        self.tgt_temp_sim.reset()
 
-        self.temp_in_init_props = env_config['temp_in_init']        # Parameter for inside temp init
         self.state = self.get_init_state()
 
         # Action space:
@@ -120,9 +123,12 @@ class HeatingEnv(gym.Env):
             Observation of system state
         """
         HeatingEnv.episode_counter += 1
-        self.time = 0
+        self.time = random.randint(0, 96)
 
         self.out_temp_sim.reset()
+        self.tgt_temp_sim.reset()
+        self.heater.reset()
+
         self.state = self.get_init_state()
         self.last_action = 0
 
@@ -149,13 +155,13 @@ class HeatingEnv(gym.Env):
         self.time += 1
         _, _, To_old, Ti_old, *_ = self.get_obs()
 
-        Ti_new = Ti_old + math.sqrt(max(Ti_old - To_old, 1)) * self.heater_strength * action \
-            + (To_old - Ti_old) * self.ener_loss
+        Ti_new = Ti_old + math.sqrt(max(Ti_old - To_old, 1)) * self.heater_strength \
+            * self.heater.on_event(action) + (To_old - Ti_old) * self.ener_loss
         To_new = self.out_temp_sim.getOutTemp(self.time)
 
         self.update_state(Ti_new, To_new)
 
-        rew = self.temp_diff_penalty * reward_comfort(self.target_temp.getTargetTemp(self.time),
+        rew = self.temp_diff_penalty * reward_comfort(self.tgt_temp_sim.getTargetTemp(self.time),
                                                       Ti_new) \
             + self.action_penalty * reward_action_change(self.last_action, action)
 
@@ -170,10 +176,10 @@ class HeatingEnv(gym.Env):
         np.array
             New state of system
         """
-        T_tgt_4 = self.target_temp.getTargetTemp(self.time + 4)
-        T_tgt = self.target_temp.getTargetTemp(self.time)
+        T_tgt_4 = self.tgt_temp_sim.getTargetTemp(self.time + 4)
+        T_tgt = self.tgt_temp_sim.getTargetTemp(self.time)
         To_init = self.out_temp_sim.getOutTemp(self.time)
-        Ti_init = temp_sim.temp_inside_init(self.temp_in_init_props)
+        Ti_init = self.tgt_temp_sim.getTargetTemp(self.time) + random.uniform(-3, 3)
         return np.array([T_tgt_4, T_tgt, To_init, *([Ti_init]*self.len_hist)])
 
     def update_state(self, Ti_new, To_new):
@@ -187,8 +193,8 @@ class HeatingEnv(gym.Env):
             New outside temperature of system
         """
         old_state = self.state
-        T_tgt = self.target_temp.getTargetTemp(self.time)
-        T_tgt_4 = self.target_temp.getTargetTemp(self.time + 4)
+        T_tgt_4 = self.tgt_temp_sim.getTargetTemp(self.time + 4)
+        T_tgt = self.tgt_temp_sim.getTargetTemp(self.time)
 
         self.state = np.zeros_like(old_state)
         self.state[0:4] = np.array([T_tgt_4, T_tgt, To_new, Ti_new])
@@ -215,34 +221,81 @@ def HeatingEnvCreator(env_config):
     return HeatingEnv(env_config)
 
 
+demo_PPO_config = {
+    "run": "PPO",       # This algorithm yielded the best performance so far
+    "env": HeatingEnv,
+    "stop": {
+        "training_iteration": 200,
+    },
+    "checkpoint_freq": 20,
+    "checkpoint_at_end": True,
+    "config": {
+        'model': {
+            "use_lstm": False, # ray.tune.grid_search([False, True]),
+            "fcnet_hiddens": ray.tune.grid_search([[16, 16], [32, 32], [16, 16, 16], [32, 32, 32]]),
+            },
+        "lr": ray.tune.grid_search([0.0005, 0.001]),
+        "train_batch_size": 4096,   # 8192
+        "gamma": 0.97,
+        "entropy_coeff": 0.01,
+        # "vf_clip_param": 10.0,
+        # "grad_clip": 10,
+        "num_workers": 6,       # 1,  # parallelism
+        "env_config": heating_controller_config.env_config_dict,
+    },
+}
+
+demo_DQN_config = {
+    "run": "DQN",
+    "env": HeatingEnv,
+    "stop": {
+        "training_iteration": 200,
+    },
+    "checkpoint_freq": 15,
+    "checkpoint_at_end": True,
+    "config": {
+        'model': {
+            "use_lstm": ray.tune.grid_search([False]),
+            "fcnet_hiddens": ray.tune.grid_search([[16, 16]]) 
+            # , [32, 32], [16, 16, 16], [32, 32, 32]]),
+            },
+        "lr": ray.tune.grid_search([0.00002, 0.0001, 0.0005]),
+        "gamma": 0.97,
+        "train_batch_size": ray.tune.grid_search([256, 512, 1024]),
+        "num_workers": 6,       # 1,  # parallelism
+        "env_config": heating_controller_config.env_config_dict,
+    },
+}
+        
+demo_PPO_config_2 = {
+    "run": "PPO",       # This algorithm yielded the best performance so far
+    "env": HeatingEnv,
+    "stop": {
+        "training_iteration": 200,
+    },
+    "checkpoint_freq": 20,
+    "checkpoint_at_end": True,
+    "config": {
+        'model': {
+            "use_lstm": False,
+            "fcnet_hiddens": ray.tune.grid_search([[8], [8, 8], [16], [16, 16], [32, 32]]),
+            },
+        "lr": ray.tune.grid_search([0.0001, 0.0005, 0.0025]),
+        "train_batch_size": ray.tune.grid_search([1024, 2048, 4096]),   # 8192
+        "gamma": 0.97,
+        "entropy_coeff": 0.01,
+        # "vf_clip_param": 10.0,
+        # "grad_clip": 10,
+        "num_workers": 6,       # 1,  # parallelism
+        "env_config": heating_controller_config.env_config_dict,
+    },
+}
+
+
 if __name__ == "__main__":
 
     ray.init()
 
     ray.tune.run_experiments({
-        "demo": {
-            "run": "PPO",       # This algorithm yielded the best performance so far
-            # "run": "DQN",
-            # "run": "A3C",
-            "env": HeatingEnv,
-            "stop": {
-                "training_iteration": 100,
-            },
-            "checkpoint_freq": 9,
-            "checkpoint_at_end": True,
-            "config": {
-                'model': {
-                    # "use_lstm": True,
-                    "fcnet_hiddens": [32, 32],
-                    },
-                "lr": ray.tune.grid_search([0.0005]),
-                "train_batch_size": 4096,   # 8192
-                "gamma": 0.97,
-                "entropy_coeff": 0.01,
-                # "vf_clip_param": 10.0,
-                # "grad_clip": 10,
-                "num_workers": 6,       # 1,  # parallelism
-                "env_config": heating_controller_config.env_config_dict,
-            },
-        },
+        "demo_PPO_2": demo_PPO_config_2
     })

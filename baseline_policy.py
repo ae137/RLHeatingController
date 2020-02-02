@@ -12,7 +12,6 @@ class BaselinePolicy(policy.Policy):
     def __init__(self, observation_space, action_space, config):
         policy.Policy.__init__(self, observation_space, action_space, config)
         # example parameter
-        self.w = 1.0
 
     def compute_actions(self,
                         obs_batch,
@@ -28,12 +27,6 @@ class BaselinePolicy(policy.Policy):
     def learn_on_batch(self, samples):
         # implement your learning code here
         return {}  # return stats
-
-    def get_weights(self):
-        return {"w": self.w}
-
-    def set_weights(self, weights):
-        self.w = weights["w"]
 
 
 class RandomPolicy(BaselinePolicy):
