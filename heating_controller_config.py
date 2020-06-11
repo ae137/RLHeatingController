@@ -1,7 +1,7 @@
 import temperature_simulator as temp_sim
 import heater_state_machine as heater_state
 
-To_min = 5          # Mean of minimum outside temperature in °C
+To_min = 0          # Mean of minimum outside temperature in °C
 To_max = 15         # Mean of maximum outside temperature in °C
 T_target_low = 16   # Mean of minimum inside target temperature in °C
 T_target_high = 21  # Mean of maximum inside target temperature in °C
@@ -14,9 +14,9 @@ Tout_init_props = temp_sim.TempInitProps(mean_min=To_min, spread_min=3,
 
 env_config_dict = \
     {
-        "h": 0.15,
-        "l": 0.025,
-        "len_hist": 3,  # 1,      # History length for last temperatures
+        "h": 0.15,                  # Heating strength
+        "l": 0.025,                 # Energy loss coefficient
+        "len_hist": 3,              # History length for last temperatures
         "temp_diff_penalty": 1,
         "action_penalty": 0.25,
         'horizon': 400,

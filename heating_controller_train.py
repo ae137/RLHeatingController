@@ -1,25 +1,4 @@
-""" heating_controller_train.py: Train a heating controller with reinforcement learning
-
-Copyright (C) 2017 Andreas Eberlein
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 3 of the License, or (at
-your option) any later version.
-
-This program is distributed in the hope that it will be useful, but
-WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
-"""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
 import numpy as np
 import random
@@ -104,6 +83,7 @@ class HeatingEnv(gym.Env):
         #   0: Heating off
         #   1: Heating on
         self.action_space = gym.spaces.Discrete(2)
+
         # Observation space at t = 0:
         # Ttgt[4], Ttgt[0], Tout[0], Tin[0], Tin[-1], Tin[-2], Tin[-3]
         # Ttgt[4]: Target temperature four time steps in the future
@@ -182,7 +162,7 @@ class HeatingEnv(gym.Env):
         Ti_init = self.tgt_temp_sim.getTargetTemp(self.time) + random.uniform(-3, 3)
         return np.array([T_tgt_4, T_tgt, To_init, *([Ti_init]*self.len_hist)])
 
-    def update_state(self, Ti_new, To_new):
+    def update_state(self, Ti_new: float, To_new: float):
         """ Update system state with given temperatures
 
         Parameters
@@ -202,6 +182,7 @@ class HeatingEnv(gym.Env):
             self.state[4:] = old_state[3:-1]
 
     def get_obs(self):
+        """ Return observable state of system """
         return self.state
 
 
@@ -221,72 +202,50 @@ def HeatingEnvCreator(env_config):
     return HeatingEnv(env_config)
 
 
-demo_PPO_config = {
-    "run": "PPO",       # This algorithm yielded the best performance so far
-    "env": HeatingEnv,
-    "stop": {
-        "training_iteration": 200,
-    },
-    "checkpoint_freq": 20,
-    "checkpoint_at_end": True,
-    "config": {
-        'model': {
-            "use_lstm": False, # ray.tune.grid_search([False, True]),
-            "fcnet_hiddens": ray.tune.grid_search([[16, 16], [32, 32], [16, 16, 16], [32, 32, 32]]),
+algorithm_model_dict = \
+    {
+        "PPO": {
+            'model': {
+                "use_lstm": False,
+                "fcnet_hiddens": ray.tune.grid_search([[16, 16], [32, 32]]),
+                }
+        },
+        "DQN": {
+            'model': {
+                "use_lstm": False,
+                "fcnet_hiddens": ray.tune.grid_search([[16, 16], [32, 32]]),
+                }
+        },
+        "SAC":
+        {
+            "Q_model": {
+                "fcnet_hiddens": ray.tune.grid_search([[16, 16], [32, 32]]),
             },
-        "lr": ray.tune.grid_search([0.0005, 0.001]),
-        "train_batch_size": 4096,   # 8192
-        "gamma": 0.97,
-        "entropy_coeff": 0.01,
-        # "vf_clip_param": 10.0,
-        # "grad_clip": 10,
-        "num_workers": 6,       # 1,  # parallelism
-        "env_config": heating_controller_config.env_config_dict,
-    },
-}
+            "policy_model": {
+                "fcnet_hiddens": ray.tune.grid_search([[16, 16], [32, 32]]),
+            },
+        }
+    }
 
-demo_DQN_config = {
-    "run": "DQN",
+
+algorithm_name = "PPO"  # Supported algorithms right now: PPO, DQN, SAC
+
+
+heat_sim_config = {
+    "run": algorithm_name,
     "env": HeatingEnv,
     "stop": {
-        "training_iteration": 200,
-    },
-    "checkpoint_freq": 15,
-    "checkpoint_at_end": True,
-    "config": {
-        'model': {
-            "use_lstm": ray.tune.grid_search([False]),
-            "fcnet_hiddens": ray.tune.grid_search([[16, 16]]) 
-            # , [32, 32], [16, 16, 16], [32, 32, 32]]),
-            },
-        "lr": ray.tune.grid_search([0.00002, 0.0001, 0.0005]),
-        "gamma": 0.97,
-        "train_batch_size": ray.tune.grid_search([256, 512, 1024]),
-        "num_workers": 6,       # 1,  # parallelism
-        "env_config": heating_controller_config.env_config_dict,
-    },
-}
-        
-demo_PPO_config_2 = {
-    "run": "PPO",       # This algorithm yielded the best performance so far
-    "env": HeatingEnv,
-    "stop": {
-        "training_iteration": 200,
+        "training_iteration": 250,
     },
     "checkpoint_freq": 20,
     "checkpoint_at_end": True,
     "config": {
-        'model': {
-            "use_lstm": False,
-            "fcnet_hiddens": ray.tune.grid_search([[8], [8, 8], [16], [16, 16], [32, 32]]),
-            },
-        "lr": ray.tune.grid_search([0.0001, 0.0005, 0.0025]),
-        "train_batch_size": ray.tune.grid_search([1024, 2048, 4096]),   # 8192
+        **algorithm_model_dict[algorithm_name],
+        "lr": ray.tune.grid_search([0.0001]),
+        "train_batch_size": ray.tune.grid_search([256, 4096]),
         "gamma": 0.97,
-        "entropy_coeff": 0.01,
-        # "vf_clip_param": 10.0,
-        # "grad_clip": 10,
-        "num_workers": 6,       # 1,  # parallelism
+        "grad_clip": 10,
+        "num_workers": 6,
         "env_config": heating_controller_config.env_config_dict,
     },
 }
@@ -297,5 +256,5 @@ if __name__ == "__main__":
     ray.init()
 
     ray.tune.run_experiments({
-        "demo_PPO_2": demo_PPO_config_2
+        "heat_sim": heat_sim_config
     })

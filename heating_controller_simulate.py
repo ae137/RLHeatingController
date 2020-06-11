@@ -1,107 +1,122 @@
-""" heating_controller_simulate.py: Simulate a trained heating controller
+import os
+import math
+import json
+import argparse
 
-Copyright (C) 2017 Andreas Eberlein
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 3 of the License, or (at
-your option) any later version.
-
-This program is distributed in the hope that it will be useful, but
-WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
-"""
-
-from heating_controller_train import HeatingEnv, HeatingEnvCreator
-
+import gym
+import ray
 import matplotlib.pyplot as plt
 import numpy as np
-import gym
-import ray.rllib.agents.ppo as ppo
-import ray.rllib.agents.dqn as dqn
-import ray
-import os
+import ray.rllib.agents as agents
 
 import temperature_simulator as temp_sim
 import heating_controller_config
 import baseline_policy
+from heating_controller_train import HeatingEnv, HeatingEnvCreator
 
 # Register HeatingEnv with ray reinforcement learning library
 ray.tune.registry.register_env('HeatingEnv-v0', HeatingEnvCreator)
 
-# This configuration should be the same as in heating_controller_train.py
-config = {
-    'model': {
-        "fcnet_hiddens": [8, 8],
-        },
-    "lr": 0.0005,
-    "train_batch_size": 4096,
-    "num_workers": 6,
-    "env_config": heating_controller_config.env_config_dict
-    }
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Apply policy in inference mode for heating control.')
+parser.add_argument('trial_path', type=str, nargs=1,
+                    help='Path to folder with policy configuration and checkpoint')
+parser.add_argument('checkpoint_num', type=int, nargs=1,
+                    help="Checkpoint to be loaded for inference")
+parser.add_argument('--baseline', type=str, nargs=1, default=None,
+                    help="Name of baseline policy to be applied for same parameters as in policy configuration")
+
+args = parser.parse_args()
+trial_path = args.trial_path[0]
+checkpoint_num = args.checkpoint_num[0]
+baseline = args.baseline
 
 # Construct path to checkpoint trained with heating_controller_train.py
-base_path = os.environ['HOME'] + '/ray_results'
-# trial_path = 'demo_PPO_2/PPO_HeatingEnv_4935f5bd_2020-02-01_00-21-409_2ik84_' # [32, 32]
-trial_path = 'demo_PPO_2/PPO_HeatingEnv_4935f5b4_2020-01-31_23-13-38skhvlqqr'   # [8, 8]
-checkpoint_num = 200
+ckpt_path = os.path.join(trial_path, 'checkpoint_{}'.format(checkpoint_num))
 
-ckpt_path = base_path + '/' + trial_path + '/checkpoint_' + str(checkpoint_num) + \
-    '/checkpoint-' + str(checkpoint_num)
+if not os.path.isdir(ckpt_path):
+    print("Specified checkpoint {} does not exist".format(checkpoint_num))
+    exit()
+
+ckpt_name = os.path.join(ckpt_path, 'checkpoint-{}'.format(checkpoint_num))
+
+params_path = os.path.join(trial_path, 'params.json')
+
+with open(params_path, 'r') as params_file:
+    config = json.loads(params_file.read())
+
+config['env_config'] = heating_controller_config.env_config_dict
+
 
 ray.init()
 
 
 env = HeatingEnv(config['env_config'])
 
-# agent = baseline_policy.HeatWhenTooColdPolicy(env.observation_space, env.action_space, config)
-# agent = baseline_policy.RandomPolicy(env.observation_space, env.action_space, config)
+if baseline is not None:
+    if baseline[0] == 'RandomPolicy':
+        agent = baseline_policy.RandomPolicy(env.observation_space, env.action_space, config)
+    elif baseline[0] == 'HeatWhenTooColdPolicy':
+        agent = baseline_policy.HeatWhenTooColdPolicy(env.observation_space, env.action_space, config)
+    else:
+        print('Trying to run inference with unknown baseline policy type')
 
-# agent = ppo.PPOAgent(config=config, env="HeatingEnv-v0")
-agent = ppo.PPOAgent(config=config, env="HeatingEnv-v0")
-agent.restore(ckpt_path)
+else:
+    if 'PPO' in trial_path:
+        agent = agents.ppo.ppo.PPOTrainer(config=config, env="HeatingEnv-v0")
+    elif 'DQN' in trial_path:
+        agent = agents.dqn.dqn.DQNTrainer(config=config, env="HeatingEnv-v0")
+    elif 'SAC' in trial_path:
+        agent = agents.sac.sac.SACTrainer(config=config, env="HeatingEnv-v0")
+    else:
+        print('Trying to run inference with unknown policy type')
 
+    agent.restore(ckpt_name)
 
-steps = []
-Ti = []
-To = []
-Ttgt = []
-actions = []
-rewards = []
+num_repetitions = 25
 
-done = False
-idx = 0
+total_rewards = []
 
-obs = env.get_obs()
+for i in range(num_repetitions):
+    done = False
+    idx = 0
+    steps = []
+    Ti = []
+    To = []
+    Ttgt = []
+    actions = []
+    rewards = []
+    obs = env.get_obs()
+    while (not done):
+        steps.append(idx)
 
+        action = agent.compute_action(obs)
+        actions.append(action)
 
-while (not done):
-    steps.append(idx)
+        obs, rew, done, _ = env.step(action)
 
-    action = agent.compute_action(obs)
-    actions.append(action)
+        Ttgt.append(obs[1])
+        To.append(obs[2])
+        Ti.append(obs[3])
+        rewards.append(rew)
+        idx += 1
 
-    obs, rew, done, _ = env.step(action)
+    env.reset()
 
-    Ttgt.append(obs[1])
-    To.append(obs[2])
-    Ti.append(obs[3])
-    rewards.append(rew)
-    idx += 1
+    if i == (num_repetitions - 1):
+        plt.plot(steps, Ti, label='Ti')
+        plt.plot(steps, To, label='To')
+        plt.plot(steps, Ttgt, label='Ttgt')
+        plt.plot(steps, actions, label='Actions')
+        plt.plot(steps, rewards, label='Rewards')
+        plt.legend()
+        plt.show()
 
+    total_rewards.append(sum(rewards[100:]) / len(rewards[100:]))
 
-plt.plot(steps, Ti, label='Ti')
-plt.plot(steps, To, label='To')
-plt.plot(steps, Ttgt, label='Ttgt')
-plt.plot(steps, actions, label='Actions')
-plt.plot(steps, rewards, label='Rewards')
-plt.legend()
-plt.show()
-
-print("Average reward achieved over last", len(rewards) - 100, "steps:\t",
-      sum(rewards[100:]) / (len(rewards) - 100))
+total_rewards_array = np.array(total_rewards)
+rewards_mean = sum(total_rewards_array) / len(total_rewards_array)
+rewards_std = math.sqrt(sum((total_rewards_array - rewards_mean)**2) / len(total_rewards_array))
+print("Average reward achieved over", num_repetitions, ":")
+print("\tMean:", rewards_mean)
+print("\tFluctuations:", rewards_std)

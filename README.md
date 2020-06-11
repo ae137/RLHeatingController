@@ -7,9 +7,22 @@ In this repository, we develop a heating controller with reinforcement learning,
 
 ## Usage
  1. Check out this repository
- 2. Set up `anaconda` environment by running `conda env create -f environment.yml`.
- 3. Run `python heating_controller_train.py` after configuring simulator (mostly setting target temperature and outside temperature).
- 4. Configure path to training checkpoint in `heating_controller_simulate.py` (and adapt configuration from `heating_controller_train.py`) and run `python heating_controller_simulate.py` for visualizing the effect of the controller.
+ 2. Set up `anaconda` environment by running 
+
+    `conda env create -f environment.yml`
+
+ 3. Configure the simulator by setting temperature and training parameters in `heating_controller_config.py` and choose the algorithm in `heating_controller_train.py`. In the latter file, the configuration of the policies can also be adapted. Run
+
+    `python heating_controller_train.py`
+
+    and the checkpoints will be stored by default in `~/ray_results/heat_sim`.
+
+ 3. Run `python heating_controller_train.py` after configuring simulator (mostly setting target temperature and outside temperature) and chosing algorithm.
+ 4. Apply trained policy in simulator by running 
+
+    `python heating_controller_simulate.py [Path to checkpoint] [Checkpoint nr]`
+
+    The policy can be benchmarked against two baselines by appending `--baseline [Baseline name]` to this command.
 
 ## Results
 `TODO`
@@ -17,4 +30,5 @@ In this repository, we develop a heating controller with reinforcement learning,
 
 
 ## License
-GPLv3, see [LICENSE](https://github.com/ae137/SYKQuench/blob/master/LICENSE) for more information
+GPLv3, see [LICENSE](https://github.com/ae137/RLHeatingController/blob/master/LICENSE) for more 
+information

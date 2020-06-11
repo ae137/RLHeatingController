@@ -1,22 +1,3 @@
-""" temperature_simulator.py: Utility functions for training a heating controller
-
-Copyright (C) 2017 Andreas Eberlein
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 3 of the License, or (at
-your option) any later version.
-
-This program is distributed in the hope that it will be useful, but
-WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
-"""
-
 import math
 import random
 from collections import namedtuple
@@ -25,14 +6,26 @@ from collections import namedtuple
 
 # Named tuple for storing data required for initializing the simulation of the evolution of
 # the outside temperature
-TempInitProps = namedtuple('TempOutsideInitProps', ['mean_min', 'spread_min',
-                                                    'mean_max', 'spread_max'])
+TempInitProps = namedtuple('TempInitProps', ['mean_min', 'spread_min',
+                                             'mean_max', 'spread_max'])
+SwitchingTimes = namedtuple('SwitchingTimes', ['on_early', 'off_early',
+                                               'on_late', 'off_late',
+                                               'spread'])
+DayLength = 96      # Length of a day in multiples of 1/4 h
+
+
+def addNoiseToFloat(x: float, s: float) -> float:
+    return x + random.uniform(-s, s)
+
+
+def addNoiseToInt(x: int, s: int) -> int:
+    return x + random.randint(-s, s)
 
 
 class TemperatureSimulatorBase(object):
     """ Simple base class for temperature simulators """
 
-    def __init__(self, init_props):
+    def __init__(self, init_props: TempInitProps):
         """ Initialize simulator
 
         Parameters
@@ -41,23 +34,36 @@ class TemperatureSimulatorBase(object):
             Named tuple with data for initializing temperature simulator
         """
         self.init_props = init_props
+        # Default switching times in 1/4 h (one day = 96)
+        self.t_switch_base = SwitchingTimes(on_early=23, off_early=33,
+                                            on_late=68, off_late=88, spread=1)
+        self.t_switch = self.t_switch_base
+        self.profile_types = ["Weekday", "Holiday"]
         self.reset()
 
     def reset(self):
         """ Reinitialize temperature simulator with new min and max values """
-        self.T_min = self.init_props.mean_min + random.uniform(-self.init_props.spread_min,
-                                                               self.init_props.spread_min)
-        self.T_max = self.init_props.mean_max + random.uniform(-self.init_props.spread_max,
-                                                               self.init_props.spread_max)
+        self.T_min = addNoiseToFloat(self.init_props.mean_min, self.init_props.spread_min)
+        self.T_max = addNoiseToFloat(self.init_props.mean_max, self.init_props.spread_max)
+        self.t_switch = SwitchingTimes(on_early=addNoiseToInt(self.t_switch_base.on_early,
+                                                              self.t_switch_base.spread),
+                                       off_early=addNoiseToInt(self.t_switch_base.off_early,
+                                                               self.t_switch_base.spread),
+                                       on_late=addNoiseToInt(self.t_switch_base.on_late,
+                                                             2*self.t_switch_base.spread),
+                                       off_late=addNoiseToInt(self.t_switch_base.off_late,
+                                                              2*self.t_switch_base.spread),
+                                       spread=self.t_switch_base.spread)
+        self.day_type = "Weekday" if random.random() < 0.72 else "Holiday"
 
 
 class EnvironmentTemperatureSimulator(TemperatureSimulatorBase):
-    def getOutTemp(self, time_step) -> float:
+    def getOutTemp(self, time_step: int) -> float:
         """ Return current outside temperature
 
         Parameters
         ----------
-        time_step: float
+        time_step: int
             Time step of simulation (in multiples of quarter hours)
 
         Returns
@@ -66,17 +72,17 @@ class EnvironmentTemperatureSimulator(TemperatureSimulatorBase):
             Outside temperature at time time_step
         """
         return self.T_min + (self.T_max - self.T_min) \
-            * (math.sin(math.pi * time_step / 96))**2
+            * (math.sin(math.pi * time_step / DayLength))**2
 
 
 class TargetTemperatureSimulator(TemperatureSimulatorBase):
     """ Simple class for simulating the evolution of the target inside temperature over time """
-    def getTargetTemp(self, time_step) -> float:
+    def getTargetTemp(self, time_step: int) -> float:
         """ Return current target inside temperature
 
         Parameters
         ----------
-        time_step: float
+        time_step: int
             Time step of simulation (in multiples of quarter hours)
 
         Returns
@@ -84,13 +90,17 @@ class TargetTemperatureSimulator(TemperatureSimulatorBase):
         float
             Target inside temperature at time time_step
         """
-        # Time dependence of temperature without variation:
-        # return self.T_max
-        # Time dependence of target temperature corresponding to a weekend day:
-        return self.T_max if (time_step % 96 > 27 and time_step % 96 < 87) else self.T_min
-        # Time dependence of target temperature corresponding to a week day:
-        # return self.T_max if ((time_step % 96 > 23 and time_step % 96 < 33) or
-        #                       (time_step % 96 > 68 and time_step % 96 < 88)) else self.T_min
+        assert self.day_type in self.profile_types, "Encountered unknown temperature profile"
+        if self.day_type == "Weekday":
+            return self.T_max if ((time_step % DayLength > self.t_switch.on_early
+                                   and time_step % DayLength < self.t_switch.off_early) or
+                                  (time_step % DayLength > self.t_switch.on_late
+                                   and time_step % DayLength < self.t_switch.off_late)) \
+                                       else self.T_min
+        else:
+            return self.T_max if (time_step % DayLength > self.t_switch.on_early
+                                  and time_step % DayLength < self.t_switch.off_late) \
+                                      else self.T_min
 
 
 def main_func():
@@ -104,7 +114,7 @@ def main_func():
 
     Ti_min = 16     # Mean of minimum inside target temperature in °C
     Ti_max = 21     # Mean of maximum inside target temperature in °C
-    Tin_init_props = TempInitProps(mean_min=Ti_min, spread_min=2, mean_max=Ti_max, spread_max=2)
+    Tin_init_props = TempInitProps(mean_min=Ti_min, spread_min=1, mean_max=Ti_max, spread_max=1)
     TargetTempSim = TargetTemperatureSimulator(Tin_init_props)
 
     time_hours = []
